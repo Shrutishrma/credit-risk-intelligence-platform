@@ -1,0 +1,27 @@
+[
+    {
+        "Rule": "External credit score",
+        "Condition": "Lower EXT_SOURCE score",
+        "Interpretation": "Higher observed default risk"
+    },
+    {
+        "Rule": "Existing debt burden",
+        "Condition": "Higher BUREAU_DEBT_TO_CREDIT",
+        "Interpretation": "Higher observed default risk"
+    },
+    {
+        "Rule": "Previous application history",
+        "Condition": "Higher PREV_REFUSAL_RATE",
+        "Interpretation": "Higher observed default risk"
+    },
+    {
+        "Rule": "Repayment behaviour",
+        "Condition": "Higher AVG_PAYMENT_DELAY",
+        "Interpretation": "Higher observed default risk"
+    },
+    {
+        "Rule": "Late payment history",
+        "Condition": "Higher LATE_PAYMENT_COUNT",
+        "Interpretation": "Higher observed default risk"
+    }
+]

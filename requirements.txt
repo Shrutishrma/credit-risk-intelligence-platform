@@ -1,0 +1,11 @@
+streamlit
+pandas
+pyarrow
+duckdb
+joblib
+shap
+plotly
+scikit-learn==1.6.1
+lightgbm
+groq
+python-dotenv

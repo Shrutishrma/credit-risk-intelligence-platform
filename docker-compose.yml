@@ -1,0 +1,11 @@
+services:
+  credit-risk-app:
+    build: .
+    container_name: credit-risk-app
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
