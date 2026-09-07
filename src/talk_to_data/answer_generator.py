@@ -11,6 +11,7 @@ load_dotenv()
 def _get_secret(name: str):
     """Read a setting from environment variables or Streamlit Secrets."""
     value = os.getenv(name)
+
     if value:
         return value
 
@@ -40,6 +41,7 @@ def clean_answer(text: str) -> str:
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     text = re.sub(r"__(.*?)__", r"\1", text)
     text = re.sub(r"^\s*[-•]\s*", "", text, flags=re.MULTILINE)
+
     text = re.sub(
         r"^(Answer|Key finding|Main finding|Interpretation|Conclusion)\s*:\s*",
         "",
@@ -55,6 +57,7 @@ def clean_answer(text: str) -> str:
 
 def build_conversation_context(conversation=None) -> str:
     """Pass recent turns to the answer model for follow-up continuity."""
+
     if not conversation:
         return "No previous conversation."
 
@@ -64,7 +67,8 @@ def build_conversation_context(conversation=None) -> str:
         parts.append(
             f"User question: {str(item.get('question', '')).strip()}\n"
             f"Previous answer: {str(item.get('answer', '')).strip()}\n"
-            f"Previous evidence: {item.get('result', [])[:8] if isinstance(item.get('result', []), list) else item.get('result', [])}"
+            f"Previous evidence: "
+            f"{item.get('result', [])[:8] if isinstance(item.get('result', []), list) else item.get('result', [])}"
         )
 
     return "\n\n".join(parts)
@@ -74,69 +78,81 @@ _NUMBER_PATTERN = re.compile(r"-?\d[\d,]*\.?\d*%?")
 
 
 def _numbers_in(text: str):
-    """Extract numeric tokens from text as floats (percent sign stripped)."""
+    """Extract numeric tokens from text as floats."""
     values = []
+
     for tok in _NUMBER_PATTERN.findall(text):
         cleaned = tok.rstrip("%").replace(",", "")
+
         try:
             values.append(float(cleaned))
         except ValueError:
             continue
+
     return values
 
 
 def _grounded_values(result_df) -> set:
-    """Every numeric value actually present in the SQL result, rounded for tolerant matching."""
+    """Return numeric values actually present in the SQL result."""
     values = set()
+
     for col in result_df.select_dtypes(include="number").columns:
-        for v in result_df[col].dropna():
-            values.add(round(float(v), 2))
+        for value in result_df[col].dropna():
+            values.add(round(float(value), 2))
+
     return values
 
 
 def is_grounded(answer: str, result_df, tolerance: float = 0.05) -> bool:
     """
-    True if every number in the answer can be matched (within a small rounding
-    tolerance) to a value that actually appears in the SQL result. This is
-    what catches a model inventing or approximating a figure it wasn't given.
+    Ensure every numerical value mentioned in the answer exists in the
+    returned SQL result. This prevents invented figures.
     """
+
     grounded = _grounded_values(result_df)
+
     if not grounded:
         return True
 
     for value in _numbers_in(answer):
-        if not any(abs(value - g) <= tolerance for g in grounded):
+        if not any(abs(value - actual) <= tolerance for actual in grounded):
             return False
+
     return True
 
 
-def _deterministic_answer(question: str, result_df) -> str:
-    """
-    Zero-hallucination fallback: a plain sentence built directly from the
-    dataframe, no LLM involved. Used only if the model can't produce a
-    grounded explanation after one retry.
-    """
-    rows = []
-    for _, row in result_df.head(5).iterrows():
-        rows.append(
-            "; ".join(f"{col.replace('_', ' ')}: {row[col]}" for col in result_df.columns)
-        )
-    facts = " | ".join(rows)
-    return f"Based on the data returned for '{question}' — {facts}."
-
-
 def _call_llm(prompt: str) -> str:
+    """
+    Generate a business explanation from Groq GPT-OSS.
+
+    Reasoning is deliberately excluded from the returned message so the
+    response content contains the actual business answer.
+    """
+
     response = client.chat.completions.create(
         model="openai/gpt-oss-20b",
         messages=[
-            {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+            {
+                "role": "system",
+                "content": ANSWER_SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
         ],
         temperature=0.3,
-        max_tokens=600,
+        max_completion_tokens=800,
         reasoning_effort="low",
+        include_reasoning=False,
+        stream=False,
     )
-    return clean_answer(response.choices[0].message.content)
+
+    message = response.choices[0].message
+
+    return clean_answer(
+        getattr(message, "content", None) or ""
+    )
 
 
 def generate_business_answer(
@@ -146,17 +162,20 @@ def generate_business_answer(
     conversation=None,
 ) -> str:
     """
-    Generate a business explanation from the live query result, verified
-    against that result before being returned. No result values or
-    question-specific interpretations are hardcoded.
+    Generate a natural business explanation from the live SQL result.
+
+    No answer values are hardcoded. The response is generated from the
+    actual query result and checked for unsupported numerical claims.
     """
+
     if result_df is None or result_df.empty:
         return (
             "I couldn't find matching records for that question in the "
-            "available credit-risk dataset."
+            "available credit-risk data."
         )
 
     result_text = result_df.to_string(index=False)
+
     context = build_conversation_context(conversation)
 
     prompt = ANSWER_PROMPT_TEMPLATE.format(
@@ -165,26 +184,48 @@ def generate_business_answer(
         result_text=result_text,
     )
 
+    # Make the numerical grounding requirement explicit.
+    prompt += """
+
+Additional response rules:
+- Use the returned values exactly as provided.
+- Do not invent numerical values.
+- Do not calculate new numerical values or percentage differences.
+- You may compare values using words such as higher, lower, largest, or smallest.
+- Explain what the result means in practical business language.
+- Do not mention SQL, database, query, dataframe, or implementation details.
+- Return one natural paragraph of 3-4 sentences.
+"""
+
+    # First attempt.
     answer = _call_llm(prompt)
 
-    if answer and not is_grounded(answer, result_df):
-        # One retry, explicit about the exact permitted numbers.
-        allowed = ", ".join(str(v) for v in sorted(_grounded_values(result_df)))
-        retry_prompt = (
-            prompt
-            + f"\n\nYour previous attempt used a number not present in the "
-            f"data. The ONLY numbers you may use are: {allowed}. "
-            f"Rewrite the explanation using only those values."
-        )
+    # Retry if the model returned nothing or introduced unsupported numbers.
+    if not answer or not is_grounded(answer, result_df):
+
+        retry_prompt = prompt + """
+
+The previous response could not be safely verified.
+
+Rewrite the answer using ONLY the exact numerical values present in the
+returned result. Do not introduce any new numerical calculations.
+Return only the final business explanation.
+"""
+
         answer = _call_llm(retry_prompt)
 
-        if not answer or not is_grounded(answer, result_df):
-            return _deterministic_answer(question, result_df)
-
+    # If Groq still fails, show a clear error rather than exposing a raw,
+    # database-style fallback as if it were a finished business answer.
     if not answer:
         return (
-            "I found matching data, but I could not generate a reliable "
-            "business explanation for it."
+            "I found the requested result, but I couldn't generate the "
+            "business explanation right now. Please try the question again."
+        )
+
+    if not is_grounded(answer, result_df):
+        return (
+            "I found the requested result, but I couldn't generate a "
+            "numerically reliable explanation for it. Please try again."
         )
 
     return answer
