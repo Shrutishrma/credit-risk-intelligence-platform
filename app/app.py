@@ -984,15 +984,80 @@ def clean_feature_name(feature):
 
 
 def raw_feature_name(feature):
+    """
+    Return the original applicant column represented by a model feature.
+
+    For numeric features:
+        num__AMT_CREDIT -> AMT_CREDIT
+
+    For one-hot encoded categorical features:
+        cat__NAME_EDUCATION_TYPE_Higher education -> NAME_EDUCATION_TYPE
+    """
     feature = str(feature)
 
     if feature.startswith("num__"):
         return feature[5:]
 
+    if feature.startswith("cat__"):
+        raw = feature[5:]
+
+        # Match the longest known original feature name first.
+        for original in sorted(FEATURE_LABELS.keys(), key=len, reverse=True):
+            if raw == original or raw.startswith(original + "_"):
+                return original
+
+        # Fallback for unseen categorical columns.
+        return raw.split("_", 1)[0]
+
     return feature
 
 
+def categorical_value_from_feature(feature, applicant):
+    """
+    Resolve the actual applicant value for a one-hot encoded feature.
+
+    Example:
+        cat__NAME_EDUCATION_TYPE_Higher education
+        -> applicant["NAME_EDUCATION_TYPE"]
+        -> "Higher education"
+    """
+    feature = str(feature)
+
+    if not feature.startswith("cat__"):
+        return None
+
+    raw = feature[5:]
+
+    for original in sorted(applicant.columns, key=len, reverse=True):
+        original = str(original)
+
+        if raw == original:
+            value = applicant.iloc[0].get(original)
+            return str(value) if pd.notna(value) else "Not available"
+
+        prefix = original + "_"
+        if raw.startswith(prefix):
+            # Prefer the actual applicant value from the original column.
+            actual = applicant.iloc[0].get(original)
+            if pd.notna(actual):
+                return str(actual)
+
+            # Fallback to the category encoded in the transformed feature.
+            category = raw[len(prefix):]
+            return category.replace("_", " ")
+
+    return None
+
+
 def readable_value(feature, applicant):
+    """
+    Display the applicant's ACTUAL value, including categorical values that
+    became one-hot encoded during preprocessing.
+    """
+    categorical = categorical_value_from_feature(feature, applicant)
+    if categorical is not None:
+        return categorical
+
     raw = raw_feature_name(feature)
 
     if raw == "DAYS_BIRTH":
@@ -1026,29 +1091,39 @@ def readable_value(feature, applicant):
     if "RATIO" in raw:
         return f"{float(value):.2f}"
 
+    if isinstance(value, str):
+        return value
+
     return f"{float(value):.2f}"
 
 
 def feature_explanation(feature, applicant=None):
     """
-    Explain the applicant's actual feature value in business language.
-    The value itself is always read from the applicant dataframe.
+    Explain the applicant's real feature value in business language.
+
+    One-hot encoded categorical features are resolved back to their original
+    applicant column before generating the explanation.
     """
     raw = raw_feature_name(feature)
 
-    if applicant is not None and raw in applicant.columns:
-        value = applicant.iloc[0][raw]
+    if applicant is not None:
+        if raw == "DAYS_BIRTH":
+            value = applicant.iloc[0].get("AGE_YEARS")
+        elif raw == "DAYS_EMPLOYED":
+            value = applicant.iloc[0].get("EMPLOYMENT_YEARS")
+        elif raw in applicant.columns:
+            value = applicant.iloc[0].get(raw)
+        else:
+            value = None
 
         if pd.notna(value):
-            value = float(value) if isinstance(value, (int, float)) else value
-
             if raw == "AVG_PAYMENT_DELAY":
                 if float(value) < 0:
                     return (
                         f"The average payment delay is {float(value):.2f} days. "
-                        f"The negative value means payments were recorded earlier than the "
-                        f"reference due date on average; it is therefore a repayment-timing "
-                        f"measure rather than a negative payment amount."
+                        "The negative value means payments were recorded earlier than the "
+                        "reference due date on average; it is therefore a repayment-timing "
+                        "measure rather than a negative payment amount."
                     )
                 elif float(value) == 0:
                     return (
@@ -1103,6 +1178,14 @@ def feature_explanation(feature, applicant=None):
                     f"The applicant has {float(value):.1f} years of employment history. "
                     "This provides context on employment duration and contributes to the model "
                     "alongside the applicant's other financial and demographic characteristics."
+                )
+
+            # Categorical applicant feature.
+            if isinstance(value, str):
+                return (
+                    f"The applicant's recorded value for {FEATURE_LABELS.get(raw, raw.replace('_', ' ').title())} "
+                    f"is {value}. The SHAP contribution shows how this category influenced the model "
+                    "estimate for this applicant."
                 )
 
     return FEATURE_EXPLANATIONS.get(

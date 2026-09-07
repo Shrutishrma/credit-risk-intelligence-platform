@@ -7,7 +7,21 @@ from .prompt_templates import ANSWER_SYSTEM_PROMPT, ANSWER_PROMPT_TEMPLATE
 
 load_dotenv()
 
-api_key = os.getenv("GROQ_API_KEY")
+
+def _get_secret(name: str):
+    """Read a setting from environment variables or Streamlit Secrets."""
+    value = os.getenv(name)
+    if value:
+        return value
+
+    try:
+        import streamlit as st
+        return st.secrets.get(name)
+    except Exception:
+        return None
+
+
+api_key = _get_secret("GROQ_API_KEY")
 
 if not api_key:
     raise ValueError("GROQ_API_KEY is not set.")
