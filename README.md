@@ -563,22 +563,3 @@ Possible improvements include:
 * Automated monitoring for model drift
 * Model versioning and experiment tracking
 * Production database integration
-
----
-
-## 21. Disclaimer
-
-This project is a technical demonstration of explainable credit-risk analytics.
-
-It should be used as a decision-support prototype and not as an autonomous system for making real-world lending decisions.
-
-```
-
-### After pasting
-
-Save `README.md`.
-
-Do **not** spend time polishing the README design yet. The content is what matters first.
-
-Then our next step will be the **architecture diagram + presentation PDF**, which are the remaining submission deliverables. :contentReference[oaicite:1]{index=1}
-```
